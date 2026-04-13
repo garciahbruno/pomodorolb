@@ -18,10 +18,18 @@ function fmt(sec) {
   const s = sec % 60;
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
+function getSecondsRemaining(endAt) {
+  return Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+}
 function initials(name) {
   if (!name) return "?";
   return name.split(/[\s_]+/).map((w) => w[0]).join("").toUpperCase().slice(0, 2);
 }
+
+const TIMER_DURATIONS = { pomodoro: 7, short: 10 * 60 };
+const TIMER_LABELS = { pomodoro: "Pomodoro", short: "Break" };
+const TIMER_RING_MS = 3000;
+const TIMER_TICK_MS = 250;
 
 // ── Theme ────────────────────────────────────────────────────
 const c = {
@@ -155,94 +163,194 @@ function LoginPage() {
 
 // ── Timer ────────────────────────────────────────────────────
 function Timer({ user, onComplete }) {
-  const DURATIONS = { pomodoro: 7, short: 10 * 60 };
-  const LABELS = { pomodoro: "Pomodoro", short: "Break" };
-
+  const userId = user?.id;
   const [mode, setMode] = useState("pomodoro");
-  const [left, setLeft] = useState(DURATIONS.pomodoro);
+  const [left, setLeft] = useState(TIMER_DURATIONS.pomodoro);
   const [on, setOn] = useState(false);
   const [done, setDone] = useState(0);
   const [ringing, setRinging] = useState(false);
-  const ref = useRef(null);
+
+  const intervalRef = useRef(null);
+  const endAtRef = useRef(null);
+  const ringUntilRef = useRef(null);
   const finishing = useRef(false);
   const modeRef = useRef(mode);
+  const leftRef = useRef(left);
+  const onRef = useRef(on);
+  const ringingRef = useRef(ringing);
 
-  // Keep modeRef in sync
   useEffect(() => { modeRef.current = mode; }, [mode]);
+  useEffect(() => { leftRef.current = left; }, [left]);
+  useEffect(() => { onRef.current = on; }, [on]);
+  useEffect(() => { ringingRef.current = ringing; }, [ringing]);
 
-  useEffect(() => () => clearInterval(ref.current), []);
+  const transitionToNextMode = useCallback(() => {
+    const nextMode = modeRef.current === "pomodoro" ? "short" : "pomodoro";
+    endAtRef.current = null;
+    ringUntilRef.current = null;
+    finishing.current = false;
+    onRef.current = false;
+    ringingRef.current = false;
+    modeRef.current = nextMode;
+    leftRef.current = TIMER_DURATIONS[nextMode];
+    setOn(false);
+    setRinging(false);
+    setMode(nextMode);
+    setLeft(TIMER_DURATIONS[nextMode]);
+  }, []);
 
-  useEffect(() => {
-    clearInterval(ref.current);
-    if (on) {
-      ref.current = setInterval(() => {
-        setLeft((p) => {
-          if (p <= 1) {
-            clearInterval(ref.current);
-            handleFinish();
-            return 0;
-          }
-          return p - 1;
-        });
-      }, 1000);
-    }
-    return () => clearInterval(ref.current);
-  }, [on]);
-
-  // Update tab title with timer
-  useEffect(() => {
-    if (on || ringing) {
-      document.title = `${ringing ? "00:00" : fmt(left)} - ${LABELS[mode]} | PomodoroLB`;
-    } else {
-      document.title = "PomodoroLB";
-    }
-  }, [left, on, ringing, mode]);
-
-  function playAlarm() {
+  const playAlarm = useCallback((currentMode) => {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       [0, 0.4, 0.8, 1.2, 1.6, 2.0].forEach((delay) => {
         const o = ctx.createOscillator();
         const g = ctx.createGain();
         o.connect(g); g.connect(ctx.destination);
-        o.frequency.value = modeRef.current === "pomodoro" ? 880 : 523;
+        o.frequency.value = currentMode === "pomodoro" ? 880 : 523;
         g.gain.value = 0.4;
         o.start(ctx.currentTime + delay);
         o.stop(ctx.currentTime + delay + 0.25);
       });
       setTimeout(() => ctx.close(), 4000);
     } catch {}
-  }
+  }, []);
 
-  async function handleFinish() {
+  const recordCompletion = useCallback(() => {
+    if (!userId) return;
+
+    void supabase.from("completions").insert({ user_id: userId }).then(({ error }) => {
+      if (error) {
+        console.error("Failed to record completion", error);
+        return;
+      }
+      onComplete();
+    });
+  }, [onComplete, userId]);
+
+  const handleFinish = useCallback((finishedAt = Date.now()) => {
     if (finishing.current) return;
-    finishing.current = true;
-    const currentMode = modeRef.current;
-    setOn(false);
-    setRinging(true);
-    playAlarm();
 
+    const currentMode = modeRef.current;
+    const ringUntil = finishedAt + TIMER_RING_MS;
+    finishing.current = true;
+    endAtRef.current = null;
+    onRef.current = false;
+    leftRef.current = 0;
+
+    setOn(false);
     if (currentMode === "pomodoro") {
       setDone((d) => d + 1);
-      await supabase.from("completions").insert({ user_id: user.id });
-      onComplete();
+      recordCompletion();
     }
 
-    setTimeout(() => {
-      const nextMode = currentMode === "pomodoro" ? "short" : "pomodoro";
-      setMode(nextMode);
-      setLeft(DURATIONS[nextMode]);
+    if (Date.now() >= ringUntil) {
+      ringUntilRef.current = null;
+      ringingRef.current = false;
       setRinging(false);
-      finishing.current = false;
-    }, 3000);
+      transitionToNextMode();
+      return;
+    }
+
+    ringUntilRef.current = ringUntil;
+    ringingRef.current = true;
+    setLeft(0);
+    setRinging(true);
+    playAlarm(currentMode);
+  }, [playAlarm, recordCompletion, transitionToNextMode]);
+
+  const syncTimer = useCallback(() => {
+    const now = Date.now();
+
+    if (ringingRef.current && ringUntilRef.current && now >= ringUntilRef.current) {
+      transitionToNextMode();
+      return;
+    }
+
+    if (!onRef.current || !endAtRef.current) return;
+
+    const nextLeft = getSecondsRemaining(endAtRef.current);
+    leftRef.current = nextLeft;
+    setLeft((prev) => (prev === nextLeft ? prev : nextLeft));
+
+    if (now >= endAtRef.current) {
+      handleFinish(endAtRef.current);
+    }
+  }, [handleFinish, transitionToNextMode]);
+
+  useEffect(() => {
+    clearInterval(intervalRef.current);
+    let syncTimeoutId = null;
+
+    if (on || ringing) {
+      syncTimeoutId = setTimeout(syncTimer, 0);
+      intervalRef.current = setInterval(syncTimer, TIMER_TICK_MS);
+    }
+
+    return () => {
+      if (syncTimeoutId) clearTimeout(syncTimeoutId);
+      clearInterval(intervalRef.current);
+    };
+  }, [on, ringing, syncTimer]);
+
+  useEffect(() => {
+    const syncOnVisibility = () => syncTimer();
+
+    window.addEventListener("focus", syncOnVisibility);
+    document.addEventListener("visibilitychange", syncOnVisibility);
+
+    return () => {
+      window.removeEventListener("focus", syncOnVisibility);
+      document.removeEventListener("visibilitychange", syncOnVisibility);
+    };
+  }, [syncTimer]);
+
+  useEffect(() => () => {
+    clearInterval(intervalRef.current);
+    document.title = "PomodoroLB";
+  }, []);
+
+  // Update tab title with timer
+  useEffect(() => {
+    if (on || ringing) {
+      document.title = `${ringing ? "00:00" : fmt(left)} - ${TIMER_LABELS[mode]} | PomodoroLB`;
+    } else {
+      document.title = "PomodoroLB";
+    }
+  }, [left, on, ringing, mode]);
+
+  function startTimer() {
+    if (ringingRef.current || onRef.current) return;
+
+    const nextLeft = leftRef.current || TIMER_DURATIONS[modeRef.current];
+    endAtRef.current = Date.now() + nextLeft * 1000;
+    onRef.current = true;
+    setOn(true);
+    syncTimer();
+  }
+
+  function pauseTimer() {
+    if (!onRef.current) return;
+
+    const nextLeft = endAtRef.current ? getSecondsRemaining(endAtRef.current) : leftRef.current;
+    endAtRef.current = null;
+    onRef.current = false;
+    leftRef.current = nextLeft;
+    setOn(false);
+    setLeft(nextLeft);
   }
 
   function switchMode(newMode) {
-    if (ringing) return;
+    if (ringingRef.current) return;
+
+    endAtRef.current = null;
+    ringUntilRef.current = null;
+    onRef.current = false;
+    finishing.current = false;
+    modeRef.current = newMode;
+    leftRef.current = TIMER_DURATIONS[newMode];
     setOn(false);
-    clearInterval(ref.current);
     setMode(newMode);
-    setLeft(DURATIONS[newMode]);
+    setLeft(TIMER_DURATIONS[newMode]);
   }
 
   return (
@@ -255,7 +363,7 @@ function Timer({ user, onComplete }) {
         <style>{`@keyframes pulse { from { opacity: 1; } to { opacity: 0.7; } }`}</style>
 
         <div style={{ display: "flex", justifyContent: "center", gap: 4, marginBottom: 28 }}>
-          {Object.entries(LABELS).map(([key, label]) => (
+          {Object.entries(TIMER_LABELS).map(([key, label]) => (
             <button key={key} onClick={() => switchMode(key)}
               style={{
                 padding: "8px 18px", borderRadius: 8, fontSize: 14, fontWeight: 500,
@@ -279,7 +387,7 @@ function Timer({ user, onComplete }) {
         {ringing ? (
           <div style={{ padding: "14px 0" }} />
         ) : (
-          <button onClick={() => setOn(!on)}
+          <button onClick={() => (on ? pauseTimer() : startTimer())}
             style={{
               background: "#fff", color: c.red, border: "none", padding: "14px 64px",
               borderRadius: 10, fontSize: 20, fontWeight: 600, cursor: "pointer",
@@ -295,7 +403,17 @@ function Timer({ user, onComplete }) {
 
       <div style={{ padding: "16px 24px", display: "flex", justifyContent: "center", gap: 20, background: c.cream, borderRadius: "0 0 16px 16px" }}>
         <span style={{ fontSize: 13, color: c.tanDkr }}>{done} pomodoro{done !== 1 ? "s" : ""} this session</span>
-        <button onClick={() => { if (!ringing) { setOn(false); setLeft(DURATIONS[mode]); } }}
+        <button onClick={() => {
+          if (ringingRef.current) return;
+
+          endAtRef.current = null;
+          ringUntilRef.current = null;
+          onRef.current = false;
+          finishing.current = false;
+          leftRef.current = TIMER_DURATIONS[modeRef.current];
+          setOn(false);
+          setLeft(TIMER_DURATIONS[modeRef.current]);
+        }}
           style={{ fontSize: 13, color: c.brownLt, background: "none", border: "none", cursor: ringing ? "not-allowed" : "pointer", fontFamily: "inherit", textDecoration: "underline" }}>
           Reset
         </button>
@@ -333,26 +451,39 @@ function Leaderboard({ user, refreshKey }) {
   const [leaders, setLeaders] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    let df = null;
-    if (period === "week") df = getStartOfWeek();
-    else if (period === "month") df = getStartOfMonth();
+  useEffect(() => {
+    let cancelled = false;
+    const loadTimeoutId = setTimeout(() => {
+      void (async () => {
+        setLoading(true);
+        let df = null;
+        if (period === "week") df = getStartOfWeek();
+        else if (period === "month") df = getStartOfMonth();
 
-    let q = supabase.from("completions").select("user_id, completed_at");
-    if (df) q = q.gte("completed_at", df);
-    const { data: comps } = await q;
-    const { data: profiles } = await supabase.from("profiles").select("*");
-    if (!comps || !profiles) { setLoading(false); return; }
+        let q = supabase.from("completions").select("user_id, completed_at");
+        if (df) q = q.gte("completed_at", df);
+        const { data: comps } = await q;
+        const { data: profiles } = await supabase.from("profiles").select("*");
 
-    const counts = {};
-    comps.forEach((r) => (counts[r.user_id] = (counts[r.user_id] || 0) + 1));
-    const board = profiles.map((p) => ({ ...p, count: counts[p.id] || 0 })).filter((p) => p.count > 0).sort((a, b) => b.count - a.count);
-    setLeaders(board);
-    setLoading(false);
+        if (cancelled) return;
+        if (!comps || !profiles) {
+          setLoading(false);
+          return;
+        }
+
+        const counts = {};
+        comps.forEach((r) => (counts[r.user_id] = (counts[r.user_id] || 0) + 1));
+        const board = profiles.map((p) => ({ ...p, count: counts[p.id] || 0 })).filter((p) => p.count > 0).sort((a, b) => b.count - a.count);
+        setLeaders(board);
+        setLoading(false);
+      })();
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(loadTimeoutId);
+    };
   }, [period, refreshKey]);
-
-  useEffect(() => { load(); }, [load]);
 
   const thStyle = (align) => ({ textAlign: align || "left", fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", color: c.tanDkr, fontWeight: 500, padding: "8px 10px", borderBottom: `1px solid ${c.tanDk}` });
 
