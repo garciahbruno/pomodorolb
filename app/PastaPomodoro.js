@@ -132,7 +132,7 @@ function LoginPage() {
       <div style={{ background: c.white, borderRadius: 16, border: `1px solid ${c.tanDk}`, padding: "40px 32px", width: "100%", maxWidth: 380, textAlign: "center" }}>
         <div style={{ fontSize: 48, marginBottom: 8 }}>🍝</div>
         <h1 style={{ fontSize: 24, fontWeight: 600, color: c.brown, margin: "0 0 4px" }}>Pomodoro Leaderboard</h1>
-        <p style={{ fontSize: 14, color: c.tanDkr, margin: "0 0 28px" }}>Focus. Rank. Repeat.</p>
+        <p style={{ fontSize: 14, color: c.tanDkr, margin: "0 0 28px" }}>Study study study</p>
         <form onSubmit={go}>
           {isSignUp && (
             <input type="text" placeholder="choose a username" value={username} onChange={(e) => setUsername(e.target.value)} required
