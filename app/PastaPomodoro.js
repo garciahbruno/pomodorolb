@@ -155,18 +155,20 @@ function LoginPage() {
 
 // ── Timer ────────────────────────────────────────────────────
 function Timer({ user, onComplete }) {
-  const MODES = {
-    pomodoro: { label: "Pomodoro", seconds: 50 * 60 },  // TODO: change back to 50 * 60
-    short: { label: "Break", seconds: 10 * 60 },         // TODO: change back to 10 * 60
-  };
+  const DURATIONS = { pomodoro: 50 * 60, short: 10 * 60 };
+  const LABELS = { pomodoro: "Pomodoro", short: "Break" };
 
   const [mode, setMode] = useState("pomodoro");
-  const [left, setLeft] = useState(MODES.pomodoro.seconds);
+  const [left, setLeft] = useState(DURATIONS.pomodoro);
   const [on, setOn] = useState(false);
   const [done, setDone] = useState(0);
   const [ringing, setRinging] = useState(false);
   const ref = useRef(null);
   const finishing = useRef(false);
+  const modeRef = useRef(mode);
+
+  // Keep modeRef in sync
+  useEffect(() => { modeRef.current = mode; }, [mode]);
 
   useEffect(() => () => clearInterval(ref.current), []);
 
@@ -175,7 +177,11 @@ function Timer({ user, onComplete }) {
     if (on) {
       ref.current = setInterval(() => {
         setLeft((p) => {
-          if (p <= 1) { clearInterval(ref.current); finish(); return 0; }
+          if (p <= 1) {
+            clearInterval(ref.current);
+            handleFinish();
+            return 0;
+          }
           return p - 1;
         });
       }, 1000);
@@ -190,7 +196,7 @@ function Timer({ user, onComplete }) {
         const o = ctx.createOscillator();
         const g = ctx.createGain();
         o.connect(g); g.connect(ctx.destination);
-        o.frequency.value = mode === "pomodoro" ? 880 : 523;
+        o.frequency.value = modeRef.current === "pomodoro" ? 880 : 523;
         g.gain.value = 0.4;
         o.start(ctx.currentTime + delay);
         o.stop(ctx.currentTime + delay + 0.25);
@@ -199,24 +205,24 @@ function Timer({ user, onComplete }) {
     } catch {}
   }
 
-  async function finish() {
+  async function handleFinish() {
     if (finishing.current) return;
     finishing.current = true;
+    const currentMode = modeRef.current;
     setOn(false);
     setRinging(true);
     playAlarm();
 
-    if (mode === "pomodoro") {
+    if (currentMode === "pomodoro") {
       setDone((d) => d + 1);
       await supabase.from("completions").insert({ user_id: user.id });
       onComplete();
     }
 
-    // Wait 6 seconds while ringing, then switch
     setTimeout(() => {
-      const nextMode = mode === "pomodoro" ? "short" : "pomodoro";
+      const nextMode = currentMode === "pomodoro" ? "short" : "pomodoro";
       setMode(nextMode);
-      setLeft(MODES[nextMode].seconds);
+      setLeft(DURATIONS[nextMode]);
       setRinging(false);
       finishing.current = false;
     }, 6000);
@@ -227,10 +233,8 @@ function Timer({ user, onComplete }) {
     setOn(false);
     clearInterval(ref.current);
     setMode(newMode);
-    setLeft(MODES[newMode].seconds);
+    setLeft(DURATIONS[newMode]);
   }
-
-  const total = MODES[mode].seconds;
 
   return (
     <div style={{ textAlign: "center", borderRadius: 16, overflow: "hidden" }}>
@@ -241,9 +245,8 @@ function Timer({ user, onComplete }) {
       }}>
         <style>{`@keyframes pulse { from { opacity: 1; } to { opacity: 0.7; } }`}</style>
 
-        {/* Mode tabs */}
         <div style={{ display: "flex", justifyContent: "center", gap: 4, marginBottom: 28 }}>
-          {Object.entries(MODES).map(([key, val]) => (
+          {Object.entries(LABELS).map(([key, label]) => (
             <button key={key} onClick={() => switchMode(key)}
               style={{
                 padding: "8px 18px", borderRadius: 8, fontSize: 14, fontWeight: 500,
@@ -252,12 +255,11 @@ function Timer({ user, onComplete }) {
                 color: mode === key ? "#fff" : "rgba(255,255,255,0.7)",
                 transition: "all 0.15s",
               }}>
-              {val.label}
+              {label}
             </button>
           ))}
         </div>
 
-        {/* Time display */}
         <p style={{
           fontSize: 96, fontWeight: 700, color: "#fff", fontVariantNumeric: "tabular-nums",
           margin: "0 0 28px", lineHeight: 1, letterSpacing: "0.02em",
@@ -265,7 +267,6 @@ function Timer({ user, onComplete }) {
           {ringing ? "00:00" : fmt(left)}
         </p>
 
-        {/* Ringing or Start/Pause */}
         {ringing ? (
           <div style={{ padding: "14px 0" }} />
         ) : (
@@ -283,10 +284,9 @@ function Timer({ user, onComplete }) {
         )}
       </div>
 
-      {/* Stats below */}
       <div style={{ padding: "16px 24px", display: "flex", justifyContent: "center", gap: 20, background: c.cream, borderRadius: "0 0 16px 16px" }}>
         <span style={{ fontSize: 13, color: c.tanDkr }}>{done} pomodoro{done !== 1 ? "s" : ""} this session</span>
-        <button onClick={() => { if (!ringing) { setOn(false); setLeft(MODES[mode].seconds); } }}
+        <button onClick={() => { if (!ringing) { setOn(false); setLeft(DURATIONS[mode]); } }}
           style={{ fontSize: 13, color: c.brownLt, background: "none", border: "none", cursor: ringing ? "not-allowed" : "pointer", fontFamily: "inherit", textDecoration: "underline" }}>
           Reset
         </button>
