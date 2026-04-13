@@ -519,14 +519,14 @@ export default function PastaPomodoro() {
         </div>
 
         {/* Content */}
-        <div style={{ padding: 20 }}>
-          <div style={{ display: tab === "leaderboard" ? "block" : "none" }}>
+        <div style={{ padding: 20, position: "relative" }}>
+          <div style={tab === "leaderboard" ? {} : { position: "absolute", left: -9999, visibility: "hidden" }}>
             <Leaderboard user={user} refreshKey={refreshKey} />
           </div>
-          <div style={{ display: tab === "timer" ? "block" : "none" }}>
+          <div style={tab === "timer" ? {} : { position: "absolute", left: -9999, visibility: "hidden" }}>
             <Timer user={user} onComplete={() => setRefreshKey((k) => k + 1)} />
           </div>
-          <div style={{ display: tab === "profile" ? "block" : "none" }}>
+          <div style={tab === "profile" ? {} : { position: "absolute", left: -9999, visibility: "hidden" }}>
             <ProfilePage user={user} profile={profile} onUpdate={setProfile} />
           </div>
         </div>
