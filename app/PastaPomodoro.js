@@ -155,7 +155,7 @@ function LoginPage() {
 
 // ── Timer ────────────────────────────────────────────────────
 function Timer({ user, onComplete }) {
-  const DURATIONS = { pomodoro: 50 * 60, short: 10 * 60 };
+  const DURATIONS = { pomodoro: 7, short: 10 * 60 };
   const LABELS = { pomodoro: "Pomodoro", short: "Break" };
 
   const [mode, setMode] = useState("pomodoro");
