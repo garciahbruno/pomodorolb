@@ -189,6 +189,15 @@ function Timer({ user, onComplete }) {
     return () => clearInterval(ref.current);
   }, [on]);
 
+  // Update tab title with timer
+  useEffect(() => {
+    if (on || ringing) {
+      document.title = `${ringing ? "00:00" : fmt(left)} - ${LABELS[mode]} | PomodoroLB`;
+    } else {
+      document.title = "PomodoroLB";
+    }
+  }, [left, on, ringing, mode]);
+
   function playAlarm() {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -494,7 +503,7 @@ export default function PastaPomodoro() {
         {/* Topbar */}
         <div style={{ background: c.red, padding: "14px 20px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ color: "#fff", fontSize: 17, fontWeight: 600 }}>Pomodoro Leaderboards</span>
+            <span style={{ color: "#fff", fontSize: 17, fontWeight: 600 }}>PomodoroLB</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <button onClick={() => supabase.auth.signOut()}

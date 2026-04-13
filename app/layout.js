@@ -1,7 +1,7 @@
 import "./globals.css";
 
 export const metadata = {
-  title: "Pasta Pomodoro",
+  title: "Pomodoro",
   description: "Focus. Rank. Repeat.",
 };
 
