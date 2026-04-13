@@ -29,7 +29,7 @@ function getDefaultUsername(user) {
   return user?.user_metadata?.username || user?.email?.split("@")[0] || "anon";
 }
 
-const TIMER_DURATIONS = { pomodoro: 7, short: 10 * 60 };
+const TIMER_DURATIONS = { pomodoro: 50 * 60, short: 10 * 60 };
 const TIMER_LABELS = { pomodoro: "Pomodoro", short: "Break" };
 const TIMER_RING_MS = 3000;
 const TIMER_TICK_MS = 250;
