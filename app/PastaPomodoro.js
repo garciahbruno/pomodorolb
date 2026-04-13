@@ -25,6 +25,9 @@ function initials(name) {
   if (!name) return "?";
   return name.split(/[\s_]+/).map((w) => w[0]).join("").toUpperCase().slice(0, 2);
 }
+function getDefaultUsername(user) {
+  return user?.user_metadata?.username || user?.email?.split("@")[0] || "anon";
+}
 
 const TIMER_DURATIONS = { pomodoro: 7, short: 10 * 60 };
 const TIMER_LABELS = { pomodoro: "Pomodoro", short: "Break" };
@@ -549,7 +552,7 @@ function ProfilePage({ user, profile, onUpdate }) {
     await supabase.from("profiles").update({ bio }).eq("id", user.id);
     setSaving(false);
     setSaved(true);
-    onUpdate({ ...profile, bio });
+    onUpdate({ ...(profile || {}), bio });
     setTimeout(() => setSaved(false), 2000);
   }
 
@@ -565,7 +568,7 @@ function ProfilePage({ user, profile, onUpdate }) {
           size={80}
           editable={true}
           userId={user.id}
-          onUpload={(newUrl) => onUpdate({ ...profile, avatar_url: newUrl })}
+          onUpload={(newUrl) => onUpdate({ ...(profile || {}), avatar_url: newUrl })}
         />
         <p style={{ fontSize: 12, color: c.tanDkr, marginTop: 10 }}>{user.email}</p>
       </div>
@@ -592,38 +595,90 @@ export default function PastaPomodoro() {
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        setUser(session.user);
-        supabase.from("profiles").select("*").eq("id", session.user.id).single().then(async ({ data }) => {
-          if (!data) {
-            const { data: newProfile } = await supabase.from("profiles").insert({ id: session.user.id, username: session.user.user_metadata?.username || session.user.email?.split("@")[0] }).select().single();
-            data = newProfile;
-          }
-          setProfile(data);
-          setLoading(false);
-        });
-      } else {
-        setLoading(false);
-      }
-    });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (event === "SIGNED_IN" && session?.user) {
-        setUser(session.user);
-        let { data } = await supabase.from("profiles").select("*").eq("id", session.user.id).single();
+    let active = true;
+    let profileRequestId = 0;
+
+    async function loadProfile(nextUser) {
+      const requestId = ++profileRequestId;
+
+      try {
+        let { data, error } = await supabase.from("profiles").select("*").eq("id", nextUser.id).maybeSingle();
+
+        if (error) throw error;
         if (!data) {
-          // Profile doesn't exist yet, create it
-          const { data: newProfile } = await supabase.from("profiles").insert({ id: session.user.id, username: session.user.user_metadata?.username || session.user.email?.split("@")[0] }).select().single();
+          const { data: newProfile, error: insertError } = await supabase.from("profiles")
+            .insert({ id: nextUser.id, username: getDefaultUsername(nextUser) })
+            .select()
+            .single();
+
+          if (insertError) throw insertError;
           data = newProfile;
         }
-        setProfile(data);
+
+        if (active && requestId === profileRequestId) {
+          setProfile(data);
+        }
+      } catch (error) {
+        console.error("Failed to load profile", error);
+        if (active && requestId === profileRequestId) {
+          setProfile(null);
+        }
+      }
+    }
+
+    async function bootstrap() {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        if (!active) return;
+
+        const sessionUser = session?.user || null;
+        setUser(sessionUser);
         setLoading(false);
-      } else if (event === "SIGNED_OUT") {
+
+        if (sessionUser) {
+          void loadProfile(sessionUser);
+        } else {
+          setProfile(null);
+        }
+      } catch (error) {
+        console.error("Failed to restore session", error);
+        if (!active) return;
         setUser(null);
+        setProfile(null);
+        setLoading(false);
+      }
+    }
+
+    void bootstrap();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!active) return;
+
+      if (event === "SIGNED_OUT") {
+        profileRequestId += 1;
+        setUser(null);
+        setProfile(null);
+        setLoading(false);
+        return;
+      }
+
+      const sessionUser = session?.user || null;
+      setUser(sessionUser);
+      setLoading(false);
+
+      if (sessionUser) {
+        void loadProfile(sessionUser);
+      } else {
+        profileRequestId += 1;
         setProfile(null);
       }
     });
-    return () => subscription?.unsubscribe();
+
+    return () => {
+      active = false;
+      subscription?.unsubscribe();
+    };
   }, []);
 
   if (loading) {
@@ -676,7 +731,7 @@ export default function PastaPomodoro() {
             <Timer user={user} onComplete={() => setRefreshKey((k) => k + 1)} />
           </div>
           <div style={tab === "profile" ? {} : { position: "absolute", left: -9999, visibility: "hidden" }}>
-            <ProfilePage user={user} profile={profile} onUpdate={setProfile} />
+            <ProfilePage key={`${user.id}:${profile?.id || "pending"}`} user={user} profile={profile} onUpdate={setProfile} />
           </div>
         </div>
       </div>
