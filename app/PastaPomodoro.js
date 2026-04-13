@@ -464,7 +464,11 @@ export default function PastaPomodoro() {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) {
         setUser(session.user);
-        supabase.from("profiles").select("*").eq("id", session.user.id).single().then(({ data }) => {
+        supabase.from("profiles").select("*").eq("id", session.user.id).single().then(async ({ data }) => {
+          if (!data) {
+            const { data: newProfile } = await supabase.from("profiles").insert({ id: session.user.id, username: session.user.user_metadata?.username || session.user.email?.split("@")[0] }).select().single();
+            data = newProfile;
+          }
           setProfile(data);
           setLoading(false);
         });
@@ -475,7 +479,12 @@ export default function PastaPomodoro() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === "SIGNED_IN" && session?.user) {
         setUser(session.user);
-        const { data } = await supabase.from("profiles").select("*").eq("id", session.user.id).single();
+        let { data } = await supabase.from("profiles").select("*").eq("id", session.user.id).single();
+        if (!data) {
+          // Profile doesn't exist yet, create it
+          const { data: newProfile } = await supabase.from("profiles").insert({ id: session.user.id, username: session.user.user_metadata?.username || session.user.email?.split("@")[0] }).select().single();
+          data = newProfile;
+        }
         setProfile(data);
         setLoading(false);
       } else if (event === "SIGNED_OUT") {
