@@ -156,8 +156,8 @@ function LoginPage() {
 // ── Timer ────────────────────────────────────────────────────
 function Timer({ user, onComplete }) {
   const MODES = {
-    pomodoro: { label: "Pomodoro", seconds: 1 },  // TODO: change back to 50 * 60
-    short: { label: "Break", seconds: 1 },         // TODO: change back to 10 * 60
+    pomodoro: { label: "Pomodoro", seconds: 50 * 60 },  // TODO: change back to 50 * 60
+    short: { label: "Break", seconds: 10 * 60 },         // TODO: change back to 10 * 60
   };
 
   const [mode, setMode] = useState("pomodoro");
