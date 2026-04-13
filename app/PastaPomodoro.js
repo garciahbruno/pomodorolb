@@ -131,7 +131,7 @@ function LoginPage() {
     <div style={{ minHeight: "100vh", background: c.cream, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
       <div style={{ background: c.white, borderRadius: 16, border: `1px solid ${c.tanDk}`, padding: "40px 32px", width: "100%", maxWidth: 380, textAlign: "center" }}>
         <div style={{ fontSize: 48, marginBottom: 8 }}>🍝</div>
-        <h1 style={{ fontSize: 24, fontWeight: 600, color: c.brown, margin: "0 0 4px" }}>Pasta Pomodoro</h1>
+        <h1 style={{ fontSize: 24, fontWeight: 600, color: c.brown, margin: "0 0 4px" }}>Pomodoro Leaderboard</h1>
         <p style={{ fontSize: 14, color: c.tanDkr, margin: "0 0 28px" }}>Focus. Rank. Repeat.</p>
         <form onSubmit={go}>
           {isSignUp && (
