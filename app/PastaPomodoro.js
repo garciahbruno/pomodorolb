@@ -1,6 +1,17 @@
 "use client";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "../lib/supabase";
+import {
+  buildFallbackUsername,
+  isUsernameTakenError,
+  normalizeUsername,
+} from "../lib/usernames.mjs";
+import {
+  addTimerClockMs,
+  getCurrentTimerClock,
+  getRemainingTimerSeconds,
+  hasTimerElapsed,
+} from "../lib/timer-clock.mjs";
 
 // ── Helpers ──────────────────────────────────────────────────
 function getStartOfWeek() {
@@ -18,8 +29,15 @@ function fmt(sec) {
   const s = sec % 60;
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
-function getSecondsRemaining(endAt) {
-  return Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+function fmtDuration(sec) {
+  if (!Number.isFinite(sec) || sec <= 0) return "under a minute";
+
+  const hours = Math.floor(sec / 3600);
+  const minutes = Math.ceil((sec % 3600) / 60);
+
+  if (hours > 0 && minutes > 0) return `${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h`;
+  return `${Math.max(1, minutes)}m`;
 }
 function initials(name) {
   if (!name) return "?";
@@ -113,23 +131,57 @@ function LoginPage() {
   const [isSignUp, setIsSignUp] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [notice, setNotice] = useState("");
 
   async function go(e) {
     e.preventDefault();
     setBusy(true);
     setErr("");
+    setNotice("");
 
     if (isSignUp) {
-      if (!username.trim()) { setErr("Username is required"); setBusy(false); return; }
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: { data: { username: username.trim() } },
+      const desiredUsername = normalizeUsername(username);
+      if (!desiredUsername) { setErr("Username is required"); setBusy(false); return; }
+
+      const res = await fetch("/api/auth/signup", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email,
+          password,
+          username: desiredUsername,
+        }),
+        cache: "no-store",
       });
-      if (error) { setErr(error.message); setBusy(false); return; }
-      // Update the profile with the chosen username
-      if (data?.user) {
-        await supabase.from("profiles").update({ username: username.trim() }).eq("id", data.user.id);
+
+      const payload = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        setErr(payload?.error || "Unable to create account.");
+        setBusy(false);
+        return;
+      }
+
+      if (payload?.session?.access_token && payload?.session?.refresh_token) {
+        const { error: sessionError } = await supabase.auth.setSession({
+          access_token: payload.session.access_token,
+          refresh_token: payload.session.refresh_token,
+        });
+
+        if (sessionError) {
+          setErr(sessionError.message);
+          setBusy(false);
+          return;
+        }
+      } else {
+        setIsSignUp(false);
+        setPassword("");
+        setUsername("");
+        setNotice("Account created. Check your email to confirm, then sign in.");
+        setBusy(false);
+        return;
       }
     } else {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -155,6 +207,7 @@ function LoginPage() {
             {busy ? "Loading..." : isSignUp ? "Sign up" : "Sign in"}
           </button>
           {err && <p style={{ color: c.red, fontSize: 13, marginTop: 8 }}>{err}</p>}
+          {notice && <p style={{ color: c.brownLt, fontSize: 13, marginTop: 8 }}>{notice}</p>}
         </form>
         <p style={{ fontSize: 13, color: c.tanDkr, marginTop: 16, cursor: "pointer" }} onClick={() => { setIsSignUp(!isSignUp); setErr(""); }}>
           {isSignUp ? "Already have an account? Sign in" : "No account? Sign up"}
@@ -172,8 +225,10 @@ function Timer({ user, onComplete }) {
   const [on, setOn] = useState(false);
   const [done, setDone] = useState(0);
   const [ringing, setRinging] = useState(false);
+  const [completionErr, setCompletionErr] = useState("");
 
-  const intervalRef = useRef(null);
+  const animationFrameRef = useRef(null);
+  const syncTimeoutRef = useRef(null);
   const endAtRef = useRef(null);
   const ringUntilRef = useRef(null);
   const finishing = useRef(false);
@@ -186,6 +241,18 @@ function Timer({ user, onComplete }) {
   useEffect(() => { leftRef.current = left; }, [left]);
   useEffect(() => { onRef.current = on; }, [on]);
   useEffect(() => { ringingRef.current = ringing; }, [ringing]);
+
+  const clearTimerLoop = useCallback(() => {
+    if (syncTimeoutRef.current) {
+      clearTimeout(syncTimeoutRef.current);
+      syncTimeoutRef.current = null;
+    }
+
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+  }, []);
 
   const transitionToNextMode = useCallback(() => {
     const nextMode = modeRef.current === "pomodoro" ? "short" : "pomodoro";
@@ -221,20 +288,50 @@ function Timer({ user, onComplete }) {
   const recordCompletion = useCallback(() => {
     if (!userId) return;
 
-    void supabase.from("completions").insert({ user_id: userId }).then(({ error }) => {
-      if (error) {
+    void (async () => {
+      try {
+        const {
+          data: { session },
+          error: sessionError,
+        } = await supabase.auth.getSession();
+
+        if (sessionError) throw sessionError;
+        if (!session?.access_token) throw new Error("Missing access token");
+
+        const res = await fetch("/api/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          cache: "no-store",
+        });
+
+        const payload = await res.json().catch(() => null);
+
+        if (!res.ok) {
+          if (res.status === 429) {
+            setCompletionErr(`Completion already recorded. Try again in ${fmtDuration(payload?.retryAfterSeconds)}.`);
+            return;
+          }
+
+          throw new Error(payload?.error || "Unable to record completion");
+        }
+
+        setCompletionErr("");
+        setDone((d) => d + 1);
+        onComplete();
+      } catch (error) {
         console.error("Failed to record completion", error);
-        return;
+        setCompletionErr("Could not record this completion. Please try again after reconnecting.");
       }
-      onComplete();
-    });
+    })();
   }, [onComplete, userId]);
 
-  const handleFinish = useCallback((finishedAt = Date.now()) => {
+  const handleFinish = useCallback((finishedAt = getCurrentTimerClock()) => {
     if (finishing.current) return;
 
     const currentMode = modeRef.current;
-    const ringUntil = finishedAt + TIMER_RING_MS;
+    const ringUntil = addTimerClockMs(finishedAt, TIMER_RING_MS);
     finishing.current = true;
     endAtRef.current = null;
     onRef.current = false;
@@ -242,11 +339,10 @@ function Timer({ user, onComplete }) {
 
     setOn(false);
     if (currentMode === "pomodoro") {
-      setDone((d) => d + 1);
       recordCompletion();
     }
 
-    if (Date.now() >= ringUntil) {
+    if (hasTimerElapsed(ringUntil, getCurrentTimerClock())) {
       ringUntilRef.current = null;
       ringingRef.current = false;
       setRinging(false);
@@ -262,41 +358,60 @@ function Timer({ user, onComplete }) {
   }, [playAlarm, recordCompletion, transitionToNextMode]);
 
   const syncTimer = useCallback(() => {
-    const now = Date.now();
+    const now = getCurrentTimerClock();
 
-    if (ringingRef.current && ringUntilRef.current && now >= ringUntilRef.current) {
+    if (ringingRef.current && ringUntilRef.current && hasTimerElapsed(ringUntilRef.current, now)) {
       transitionToNextMode();
       return;
     }
 
     if (!onRef.current || !endAtRef.current) return;
 
-    const nextLeft = getSecondsRemaining(endAtRef.current);
+    const nextLeft = getRemainingTimerSeconds(endAtRef.current, now);
     leftRef.current = nextLeft;
     setLeft((prev) => (prev === nextLeft ? prev : nextLeft));
 
-    if (now >= endAtRef.current) {
+    if (hasTimerElapsed(endAtRef.current, now)) {
       handleFinish(endAtRef.current);
     }
   }, [handleFinish, transitionToNextMode]);
 
-  useEffect(() => {
-    clearInterval(intervalRef.current);
-    let syncTimeoutId = null;
+  const scheduleTimerLoop = useCallback(() => {
+    if (!onRef.current && !ringingRef.current) return;
 
-    if (on || ringing) {
-      syncTimeoutId = setTimeout(syncTimer, 0);
-      intervalRef.current = setInterval(syncTimer, TIMER_TICK_MS);
+    const tick = () => {
+      syncTimer();
+      scheduleTimerLoop();
+    };
+
+    if (typeof document !== "undefined" && document.visibilityState === "visible") {
+      animationFrameRef.current = requestAnimationFrame(tick);
+      return;
     }
 
-    return () => {
-      if (syncTimeoutId) clearTimeout(syncTimeoutId);
-      clearInterval(intervalRef.current);
-    };
-  }, [on, ringing, syncTimer]);
+    syncTimeoutRef.current = setTimeout(tick, TIMER_TICK_MS);
+  }, [syncTimer]);
 
   useEffect(() => {
-    const syncOnVisibility = () => syncTimer();
+    clearTimerLoop();
+
+    if (on || ringing) {
+      syncTimer();
+      scheduleTimerLoop();
+    }
+
+    return clearTimerLoop;
+  }, [clearTimerLoop, on, ringing, scheduleTimerLoop, syncTimer]);
+
+  useEffect(() => {
+    const syncOnVisibility = () => {
+      clearTimerLoop();
+      syncTimer();
+
+      if (onRef.current || ringingRef.current) {
+        scheduleTimerLoop();
+      }
+    };
 
     window.addEventListener("focus", syncOnVisibility);
     document.addEventListener("visibilitychange", syncOnVisibility);
@@ -305,12 +420,12 @@ function Timer({ user, onComplete }) {
       window.removeEventListener("focus", syncOnVisibility);
       document.removeEventListener("visibilitychange", syncOnVisibility);
     };
-  }, [syncTimer]);
+  }, [clearTimerLoop, scheduleTimerLoop, syncTimer]);
 
   useEffect(() => () => {
-    clearInterval(intervalRef.current);
+    clearTimerLoop();
     document.title = "PomodoroLB";
-  }, []);
+  }, [clearTimerLoop]);
 
   // Update tab title with timer
   useEffect(() => {
@@ -324,8 +439,9 @@ function Timer({ user, onComplete }) {
   function startTimer() {
     if (ringingRef.current || onRef.current) return;
 
+    setCompletionErr("");
     const nextLeft = leftRef.current || TIMER_DURATIONS[modeRef.current];
-    endAtRef.current = Date.now() + nextLeft * 1000;
+    endAtRef.current = addTimerClockMs(getCurrentTimerClock(), nextLeft * 1000);
     onRef.current = true;
     setOn(true);
     syncTimer();
@@ -334,7 +450,9 @@ function Timer({ user, onComplete }) {
   function pauseTimer() {
     if (!onRef.current) return;
 
-    const nextLeft = endAtRef.current ? getSecondsRemaining(endAtRef.current) : leftRef.current;
+    const nextLeft = endAtRef.current
+      ? getRemainingTimerSeconds(endAtRef.current, getCurrentTimerClock())
+      : leftRef.current;
     endAtRef.current = null;
     onRef.current = false;
     leftRef.current = nextLeft;
@@ -345,6 +463,7 @@ function Timer({ user, onComplete }) {
   function switchMode(newMode) {
     if (ringingRef.current) return;
 
+    setCompletionErr("");
     endAtRef.current = null;
     ringUntilRef.current = null;
     onRef.current = false;
@@ -409,6 +528,7 @@ function Timer({ user, onComplete }) {
         <button onClick={() => {
           if (ringingRef.current) return;
 
+          setCompletionErr("");
           endAtRef.current = null;
           ringUntilRef.current = null;
           onRef.current = false;
@@ -421,6 +541,9 @@ function Timer({ user, onComplete }) {
           Reset
         </button>
       </div>
+      {completionErr ? (
+        <p style={{ margin: "12px 20px 0", fontSize: 12, color: c.red, textAlign: "center" }}>{completionErr}</p>
+      ) : null}
     </div>
   );
 }
@@ -602,17 +725,38 @@ export default function PastaPomodoro() {
       const requestId = ++profileRequestId;
 
       try {
+        async function createMissingProfile() {
+          const requestedUsername = normalizeUsername(getDefaultUsername(nextUser));
+          const fallbackUsername = buildFallbackUsername(nextUser.id);
+          const candidates = [requestedUsername, fallbackUsername].filter(Boolean).filter((value, index, values) => values.indexOf(value) === index);
+
+          for (const candidate of candidates) {
+            const { data: newProfile, error: insertError } = await supabase.from("profiles")
+              .insert({ id: nextUser.id, username: candidate })
+              .select()
+              .single();
+
+            if (!insertError) {
+              return newProfile;
+            }
+
+            const { data: existingProfile, error: reloadError } = await supabase.from("profiles").select("*").eq("id", nextUser.id).maybeSingle();
+            if (reloadError) throw reloadError;
+            if (existingProfile) return existingProfile;
+
+            if (isUsernameTakenError(insertError)) continue;
+
+            throw insertError;
+          }
+
+          throw new Error("Failed to create a unique profile username");
+        }
+
         let { data, error } = await supabase.from("profiles").select("*").eq("id", nextUser.id).maybeSingle();
 
         if (error) throw error;
         if (!data) {
-          const { data: newProfile, error: insertError } = await supabase.from("profiles")
-            .insert({ id: nextUser.id, username: getDefaultUsername(nextUser) })
-            .select()
-            .single();
-
-          if (insertError) throw insertError;
-          data = newProfile;
+          data = await createMissingProfile();
         }
 
         if (active && requestId === profileRequestId) {
