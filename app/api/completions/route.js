@@ -4,7 +4,12 @@ import {
   COMPLETION_COOLDOWN_MINUTES,
   createCompletionPostHandler,
 } from "../../../lib/completion-route.mjs";
-import { createSupabaseAdminClient } from "../../../lib/server-supabase";
+import {
+  createSupabaseAdminClient,
+  createSupabaseAnonClient,
+  createSupabaseUserClient,
+  hasSupabaseServiceRoleKey,
+} from "../../../lib/server-supabase";
 
 const CACHE_HEADERS = { "Cache-Control": "no-store" };
 
@@ -25,13 +30,16 @@ export async function POST(request) {
   const accessToken = getBearerToken(request);
 
   try {
-    const supabase = createSupabaseAdminClient();
+    const authSupabase = createSupabaseAnonClient();
+    const supabase = hasSupabaseServiceRoleKey()
+      ? createSupabaseAdminClient()
+      : createSupabaseUserClient(accessToken);
     const handleCompletionPost = createCompletionPostHandler({
       getUserFromAccessToken: async (token) => {
         const {
           data: { user },
           error: authError,
-        } = await supabase.auth.getUser(token);
+        } = await authSupabase.auth.getUser(token);
 
         if (authError) return null;
         return user;
@@ -62,6 +70,18 @@ export async function POST(request) {
   } catch (error) {
     if (error?.message !== "completion_cooldown_active") {
       console.error("Completion route failed", error);
+    }
+
+    const lowerMessage = String(error?.message || "").toLowerCase();
+    if (
+      lowerMessage.includes("permission denied") ||
+      lowerMessage.includes("record_completion") ||
+      lowerMessage.includes("42501")
+    ) {
+      return NextResponse.json(
+        { error: "Completion recording is not configured. Apply the latest Supabase completions migration." },
+        { status: 500, headers: CACHE_HEADERS }
+      );
     }
 
     return NextResponse.json(
