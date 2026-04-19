@@ -13,11 +13,18 @@ export const runtime = "nodejs";
 export async function POST(request) {
   try {
     const body = await request.json().catch(() => null);
-    const adminSupabase = createSupabaseAdminClient();
+    const adminSupabase = process.env.SUPABASE_SERVICE_ROLE_KEY
+      ? createSupabaseAdminClient()
+      : null;
     const anonSupabase = createSupabaseAnonClient();
 
     const handleSignup = createSignupHandler({
       checkUsernameAvailability: async (username) => {
+        if (!adminSupabase) {
+          // The DB trigger still enforces uniqueness if no service-role precheck is available.
+          return true;
+        }
+
         const { data, error } = await adminSupabase
           .from("profiles")
           .select("id")
