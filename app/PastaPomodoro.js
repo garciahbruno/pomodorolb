@@ -123,15 +123,72 @@ function Avatar({ url, name, size = 64, editable = false, userId, onUpload }) {
   );
 }
 
+// ── Password update form (shared by Profile + recovery) ──────
+function PasswordUpdateForm({ submitLabel = "Update password", onSuccess }) {
+  const [pw, setPw] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [done, setDone] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setErr("");
+    setDone(false);
+
+    if (pw.length < 6) { setErr("Password must be at least 6 characters."); return; }
+    if (pw !== confirm) { setErr("Passwords do not match."); return; }
+
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: pw });
+    setBusy(false);
+
+    if (error) { setErr(error.message); return; }
+
+    setPw("");
+    setConfirm("");
+    setDone(true);
+    if (onSuccess) onSuccess();
+  }
+
+  return (
+    <form onSubmit={submit}>
+      <input type="password" placeholder="new password" value={pw} onChange={(e) => { setPw(e.target.value); setDone(false); }} required minLength={6} style={inputSt} />
+      <input type="password" placeholder="confirm new password" value={confirm} onChange={(e) => { setConfirm(e.target.value); setDone(false); }} required minLength={6} style={inputSt} />
+      <button type="submit" disabled={busy} style={{ ...btnSt, opacity: busy ? 0.7 : 1, marginBottom: 0 }}>
+        {busy ? "Saving..." : submitLabel}
+      </button>
+      {err && <p style={{ color: c.red, fontSize: 13, marginTop: 8 }}>{err}</p>}
+      {done && !err && <p style={{ color: c.brownLt, fontSize: 13, marginTop: 8 }}>Password updated.</p>}
+    </form>
+  );
+}
+
 // ── LoginPage ────────────────────────────────────────────────
 function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [username, setUsername] = useState("");
   const [isSignUp, setIsSignUp] = useState(false);
+  const [forgot, setForgot] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [notice, setNotice] = useState("");
+
+  async function sendReset(e) {
+    e.preventDefault();
+    setBusy(true);
+    setErr("");
+    setNotice("");
+
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: typeof window !== "undefined" ? window.location.origin : undefined,
+    });
+
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    setNotice("If that email has an account, a reset link is on its way.");
+  }
 
   async function go(e) {
     e.preventDefault();
@@ -196,22 +253,49 @@ function LoginPage() {
         <div style={{ fontSize: 48, marginBottom: 8 }}>🍝</div>
         <h1 style={{ fontSize: 24, fontWeight: 600, color: c.brown, margin: "0 0 4px" }}>Pomodoro Leaderboard</h1>
         <p style={{ fontSize: 14, color: c.tanDkr, margin: "0 0 28px" }}>Study study study</p>
-        <form onSubmit={go}>
-          {isSignUp && (
+        <form onSubmit={forgot ? sendReset : go}>
+          {isSignUp && !forgot && (
             <input type="text" placeholder="choose a username" value={username} onChange={(e) => setUsername(e.target.value)} required
               style={inputSt} />
           )}
           <input type="email" placeholder="your@email.com" value={email} onChange={(e) => setEmail(e.target.value)} required style={inputSt} />
-          <input type="password" placeholder="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} style={inputSt} />
+          {!forgot && (
+            <input type="password" placeholder="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} style={inputSt} />
+          )}
           <button type="submit" disabled={busy} style={{ ...btnSt, opacity: busy ? 0.7 : 1 }}>
-            {busy ? "Loading..." : isSignUp ? "Sign up" : "Sign in"}
+            {busy ? "Loading..." : forgot ? "Send reset link" : isSignUp ? "Sign up" : "Sign in"}
           </button>
           {err && <p style={{ color: c.red, fontSize: 13, marginTop: 8 }}>{err}</p>}
           {notice && <p style={{ color: c.brownLt, fontSize: 13, marginTop: 8 }}>{notice}</p>}
         </form>
-        <p style={{ fontSize: 13, color: c.tanDkr, marginTop: 16, cursor: "pointer" }} onClick={() => { setIsSignUp(!isSignUp); setErr(""); }}>
-          {isSignUp ? "Already have an account? Sign in" : "No account? Sign up"}
-        </p>
+        {!isSignUp && !forgot && (
+          <p style={{ fontSize: 13, color: c.tanDkr, marginTop: 16, cursor: "pointer" }} onClick={() => { setForgot(true); setErr(""); setNotice(""); }}>
+            Forgot password?
+          </p>
+        )}
+        {forgot ? (
+          <p style={{ fontSize: 13, color: c.tanDkr, marginTop: 12, cursor: "pointer" }} onClick={() => { setForgot(false); setErr(""); setNotice(""); }}>
+            Back to sign in
+          </p>
+        ) : (
+          <p style={{ fontSize: 13, color: c.tanDkr, marginTop: 12, cursor: "pointer" }} onClick={() => { setIsSignUp(!isSignUp); setErr(""); setNotice(""); }}>
+            {isSignUp ? "Already have an account? Sign in" : "No account? Sign up"}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── ResetPasswordPage (shown after a recovery email link) ────
+function ResetPasswordPage({ onDone }) {
+  return (
+    <div style={{ minHeight: "100vh", background: c.cream, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ background: c.white, borderRadius: 16, border: `1px solid ${c.tanDk}`, padding: "40px 32px", width: "100%", maxWidth: 380, textAlign: "center" }}>
+        <div style={{ fontSize: 48, marginBottom: 8 }}>🔑</div>
+        <h1 style={{ fontSize: 22, fontWeight: 600, color: c.brown, margin: "0 0 4px" }}>Set a new password</h1>
+        <p style={{ fontSize: 14, color: c.tanDkr, margin: "0 0 24px" }}>Choose a new password for your account.</p>
+        <PasswordUpdateForm submitLabel="Set new password" onSuccess={onDone} />
       </div>
     </div>
   );
@@ -741,6 +825,10 @@ function ProfilePage({ user, profile, onUpdate }) {
         style={{ width: "100%", marginTop: 16, background: c.red, color: "#fff", border: "none", padding: "10px 32px", borderRadius: 10, fontSize: 15, fontWeight: 500, cursor: "pointer", fontFamily: "inherit" }}>
         {saving ? "Saving..." : saved ? "Saved!" : "Save profile"}
       </button>
+
+      <div style={{ borderTop: `1px solid ${c.tan}`, margin: "24px 0 16px" }} />
+      <label style={{ ...labelSt, marginBottom: 8 }}>Change password</label>
+      <PasswordUpdateForm submitLabel="Update password" />
     </div>
   );
 }
@@ -751,6 +839,7 @@ export default function PastaPomodoro() {
   const [profile, setProfile] = useState(null);
   const [tab, setTab] = useState("leaderboard");
   const [loading, setLoading] = useState(true);
+  const [recovery, setRecovery] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
@@ -845,8 +934,18 @@ export default function PastaPomodoro() {
 
       if (event === "SIGNED_OUT") {
         profileRequestId += 1;
+        setRecovery(false);
         setUser(null);
         setProfile(null);
+        setLoading(false);
+        return;
+      }
+
+      // A recovery email link establishes a temporary session and fires this
+      // event; route the user to the "set new password" screen instead of the app.
+      if (event === "PASSWORD_RECOVERY") {
+        setRecovery(true);
+        setUser(session?.user || null);
         setLoading(false);
         return;
       }
@@ -878,6 +977,8 @@ export default function PastaPomodoro() {
       </div>
     );
   }
+
+  if (recovery) return <ResetPasswordPage onDone={() => setRecovery(false)} />;
 
   if (!user) return <LoginPage />;
 
