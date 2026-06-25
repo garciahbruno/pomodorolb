@@ -231,6 +231,8 @@ function Timer({ user, onComplete }) {
   const syncTimeoutRef = useRef(null);
   const endAtRef = useRef(null);
   const ringUntilRef = useRef(null);
+  const ringTimeoutRef = useRef(null);
+  const audioCtxRef = useRef(null);
   const finishing = useRef(false);
   const modeRef = useRef(mode);
   const leftRef = useRef(left);
@@ -254,7 +256,26 @@ function Timer({ user, onComplete }) {
     }
   }, []);
 
+  // Hard stop for the alarm: cancels the ring deadline and tears down the audio
+  // context so the beeping can never outlive the ring window, even if the tick
+  // loop is throttled/stalled (e.g. a backgrounded tab).
+  const stopAlarm = useCallback(() => {
+    if (ringTimeoutRef.current) {
+      clearTimeout(ringTimeoutRef.current);
+      ringTimeoutRef.current = null;
+    }
+
+    const ctx = audioCtxRef.current;
+    audioCtxRef.current = null;
+    if (ctx) {
+      try {
+        ctx.close();
+      } catch {}
+    }
+  }, []);
+
   const transitionToNextMode = useCallback(() => {
+    stopAlarm();
     const nextMode = modeRef.current === "pomodoro" ? "short" : "pomodoro";
     endAtRef.current = null;
     ringUntilRef.current = null;
@@ -267,11 +288,12 @@ function Timer({ user, onComplete }) {
     setRinging(false);
     setMode(nextMode);
     setLeft(TIMER_DURATIONS[nextMode]);
-  }, []);
+  }, [stopAlarm]);
 
   const playAlarm = useCallback((currentMode) => {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      audioCtxRef.current = ctx;
       [0, 0.4, 0.8, 1.2, 1.6, 2.0].forEach((delay) => {
         const o = ctx.createOscillator();
         const g = ctx.createGain();
@@ -281,7 +303,12 @@ function Timer({ user, onComplete }) {
         o.start(ctx.currentTime + delay);
         o.stop(ctx.currentTime + delay + 0.25);
       });
-      setTimeout(() => ctx.close(), 4000);
+      setTimeout(() => {
+        if (audioCtxRef.current === ctx) audioCtxRef.current = null;
+        try {
+          ctx.close();
+        } catch {}
+      }, 4000);
     } catch {}
   }, []);
 
@@ -355,6 +382,14 @@ function Timer({ user, onComplete }) {
     setLeft(0);
     setRinging(true);
     playAlarm(currentMode);
+
+    // Guaranteed ring stop, independent of the tick loop. If the loop is alive it
+    // will usually transition first; whichever runs first cancels the other.
+    if (ringTimeoutRef.current) clearTimeout(ringTimeoutRef.current);
+    ringTimeoutRef.current = setTimeout(() => {
+      ringTimeoutRef.current = null;
+      if (ringingRef.current) transitionToNextMode();
+    }, TIMER_RING_MS);
   }, [playAlarm, recordCompletion, transitionToNextMode]);
 
   const syncTimer = useCallback(() => {
@@ -424,8 +459,9 @@ function Timer({ user, onComplete }) {
 
   useEffect(() => () => {
     clearTimerLoop();
+    stopAlarm();
     document.title = "PomodoroLB";
-  }, [clearTimerLoop]);
+  }, [clearTimerLoop, stopAlarm]);
 
   // Update tab title with timer
   useEffect(() => {
@@ -721,6 +757,14 @@ export default function PastaPomodoro() {
     let active = true;
     let profileRequestId = 0;
 
+    // Safety net: supabase-js getSession() can hang on the browser Web Locks API
+    // (commonly on reload when an auth lock is stuck), which would otherwise leave
+    // us on the loading screen forever. Force the UI to render after a short wait;
+    // onAuthStateChange will still populate the session if/when it resolves.
+    const loadingWatchdog = setTimeout(() => {
+      if (active) setLoading(false);
+    }, 4000);
+
     async function loadProfile(nextUser) {
       const requestId = ++profileRequestId;
 
@@ -821,6 +865,7 @@ export default function PastaPomodoro() {
 
     return () => {
       active = false;
+      clearTimeout(loadingWatchdog);
       subscription?.unsubscribe();
     };
   }, []);
