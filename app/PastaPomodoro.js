@@ -609,7 +609,7 @@ function Podium({ leaders }) {
 
 // ── Leaderboard ──────────────────────────────────────────────
 function Leaderboard({ user, refreshKey }) {
-  const [period, setPeriod] = useState("week");
+  const [period, setPeriod] = useState("all");
   const [leaders, setLeaders] = useState([]);
   const [loading, setLoading] = useState(true);
 
